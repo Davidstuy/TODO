@@ -1,5 +1,5 @@
 """JWT 鉴权版接口测试：注册/登录/鉴权/行级隔离 + 5 个 CRUD"""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.database import get_session
 from app.main import app
 from app import models  # 确保建表前模型已注册到 SQLModel.metadata
+from app.models import Todo, utcnow
 
 test_engine = create_engine(
     "sqlite://",
@@ -56,6 +57,11 @@ def test_register(client):
     assert body["username"] == "bob"
     assert "id" in body
     assert "hashed_password" not in body  # 密码哈希绝不能返回给客户端
+
+    # created_at 应自动填充，且是刚刚创建的时间
+    created_at = datetime.fromisoformat(body["created_at"])
+    age = datetime.now(timezone.utc).replace(tzinfo=None) - created_at
+    assert 0 <= age.total_seconds() < 5
 
 
 def test_register_duplicate_username(client):
@@ -206,3 +212,50 @@ def test_user_cannot_access_others_todo(client):
     # alice 自己的数据完好无损
     assert client.get(f"/todos/{todo_id}", headers=alice_headers).status_code == 200
     assert client.get("/todos", headers=alice_headers).json() != []
+
+
+# ---------- 练习 2：/users/me ----------
+
+def test_get_me(client, auth_headers):
+    resp = client.get("/users/me", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["username"] == "alice"
+    assert "created_at" in body  # 练习 1 的 User.created_at 也随响应返回
+
+    assert client.get("/users/me").status_code == 401  # 未登录 401
+
+
+# ---------- 练习 3：过滤 + 排序 ----------
+
+def test_filter_by_completed(client, auth_headers):
+    client.post("/todos", json={"title": "未完成"}, headers=auth_headers)
+    client.post("/todos", json={"title": "已完成", "completed": True}, headers=auth_headers)
+
+    done = client.get("/todos?completed=true", headers=auth_headers).json()
+    todo = client.get("/todos?completed=false", headers=auth_headers).json()
+    assert [t["title"] for t in done] == ["已完成"]
+    assert [t["title"] for t in todo] == ["未完成"]
+
+
+def test_sort_todos(client, auth_headers):
+    early = client.post("/todos", json={"title": "早"}, headers=auth_headers).json()
+    late = client.post("/todos", json={"title": "晚"}, headers=auth_headers).json()
+
+    # 直接改库，让两行 created_at 明确相差一天（避免微秒级偶然相等导致排序不稳定）
+    with Session(test_engine) as s:
+        later = s.get(Todo, late["id"])
+        later.created_at = utcnow() + timedelta(days=1)
+        s.add(later)
+        s.commit()
+
+    desc = client.get("/todos?sort=created_at&order=desc", headers=auth_headers).json()
+    assert [t["title"] for t in desc] == ["晚", "早"]
+
+    asc = client.get("/todos?sort=created_at&order=asc", headers=auth_headers).json()
+    assert [t["title"] for t in asc] == ["早", "晚"]
+
+
+def test_invalid_sort_value_rejected(client, auth_headers):
+    resp = client.get("/todos?sort=title", headers=auth_headers)
+    assert resp.status_code == 422  # Literal 类型自动校验非法值

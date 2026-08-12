@@ -1,5 +1,6 @@
 """FastAPI 应用：用户注册/登录 + Todo CRUD（JWT 鉴权 + 行级隔离）"""
 from contextlib import asynccontextmanager
+from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -29,10 +30,6 @@ app = FastAPI(
 def read_root():
     return {"message": "Todo API is running"}
 
-@app.get("/user/me" , response_model=UserRead)
-def read_current_user(current_user: User = Depends(get_current_user)):
-    """获取当前登录用户信息"""
-    return current_user
 
 # ---------- 公开接口：注册 / 登录 ----------
 
@@ -59,6 +56,14 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = D
     return Token(access_token=create_access_token(user.id))
 
 
+# ---------- 用户信息 ----------
+
+@app.get("/users/me", response_model=UserRead)
+def get_me(current_user: User = Depends(get_current_user)):
+    """获取当前登录用户的信息（依赖注入已查好，直接返回即可）"""
+    return current_user
+
+
 # ---------- 受保护接口：需要登录，且只能操作自己的数据 ----------
 
 @app.post("/todos", response_model=TodoRead, status_code=status.HTTP_201_CREATED)
@@ -77,11 +82,21 @@ def create_todo(
 
 @app.get("/todos", response_model=list[TodoRead])
 def list_todos(
+    completed: Optional[bool] = None,
+    sort: Literal["id", "created_at"] = "id",
+    order: Literal["asc", "desc"] = "asc",
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """列出当前用户的所有 todo（行级隔离的核心）"""
-    return session.exec(select(Todo).where(Todo.user_id == current_user.id).order_by(Todo.id)).all()
+    """列出当前用户的 todo，支持按完成状态过滤 + 按字段排序"""
+    query = select(Todo).where(Todo.user_id == current_user.id)
+    if completed is not None:
+        query = query.where(Todo.completed == completed)
+
+    # 字符串 → 真实列对象；再动态决定升/降序（select 是惰性的，此时才真正组 SQL）
+    column = {"id": Todo.id, "created_at": Todo.created_at}[sort]
+    order_column = column.asc() if order == "asc" else column.desc()
+    return session.exec(query.order_by(order_column)).all()
 
 
 def _get_owned_todo(todo_id: int, user_id: int, session: Session) -> Todo:

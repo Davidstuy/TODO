@@ -5,6 +5,11 @@ from typing import List, Optional
 from sqlmodel import Field, Relationship, SQLModel
 
 
+def utcnow() -> datetime:
+    """返回无时区的 UTC 当前时间（SQLite 存标准格式）"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # ---------- User ----------
 
 class UserCreate(SQLModel):
@@ -17,6 +22,7 @@ class UserRead(SQLModel):
     """用户响应体：绝不包含 hashed_password"""
     id: int
     username: str
+    created_at: datetime
 
 
 class User(SQLModel, table=True):
@@ -26,6 +32,7 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(unique=True, index=True)
     hashed_password: str
+    created_at: datetime = Field(default_factory=utcnow)
 
     todos: List["Todo"] = Relationship(back_populates="user")
 
@@ -58,11 +65,6 @@ class TodoUpdate(SQLModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = None
     completed: Optional[bool] = None
-
-
-def utcnow() -> datetime:
-    """返回无时区的 UTC 当前时间（SQLite 存标准格式）"""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class TodoRead(TodoBase):
