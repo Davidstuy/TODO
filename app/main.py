@@ -1,14 +1,21 @@
 """FastAPI 应用：用户注册/登录 + Todo CRUD（JWT 鉴权 + 行级隔离）"""
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 
 from .database import create_db_and_tables, get_session
 from .models import Todo, TodoCreate, TodoRead, TodoUpdate, Token, User, UserCreate, UserRead
 from .security import create_access_token, get_current_user, hash_password, verify_password
+from .tasks import send_welcome_email
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -25,25 +32,45 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ---------- 前端静态资源 ----------
+# /static 挂载 css / js；前端目录用绝对路径定位，不依赖启动时的工作目录
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-@app.get("/")
-def read_root():
-    return {"message": "Todo API is running"}
+
+@app.get("/", include_in_schema=False)
+def read_index():
+    """站点根路径：返回前端单页应用（浏览器打开 http://localhost:8000 即可使用）"""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 # ---------- 公开接口：注册 / 登录 ----------
 
 @app.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register(user: UserCreate, session: Session = Depends(get_session)):
-    """注册新用户"""
-    existing = session.exec(select(User).where(User.username == user.username)).first()
+    """注册新用户（成功后异步发送欢迎邮件，不阻塞响应）"""
+    existing = session.exec(
+        select(User).where((User.username == user.username) | (User.email == user.email))
+    ).first()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
+        raise HTTPException(status_code=400, detail="Username or email already registered")
 
-    db_user = User(username=user.username, hashed_password=hash_password(user.password))
+    db_user = User(
+        username=user.username,
+        email=user.email,
+        hashed_password=hash_password(user.password),
+    )
     session.add(db_user)
     session.commit()
     session.refresh(db_user)
+
+    # 关键点：.delay() 只把消息塞进 Redis 队列就返回，毫秒级完成；
+    # 邮件真正发出由后台 worker 进程执行，响应不被邮件耗时阻塞。
+    try:
+        send_welcome_email.delay(db_user.email, db_user.username)
+    except Exception:
+        logger.exception("欢迎邮件入队失败，不影响注册成功（生产环境会配重试/死信队列）")
+
     return db_user
 
 

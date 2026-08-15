@@ -1,4 +1,4 @@
-"""JWT 鉴权版接口测试：注册/登录/鉴权/行级隔离 + 5 个 CRUD"""
+"""JWT 鉴权版接口测试：注册/登录/鉴权/行级隔离 + 5 个 CRUD + 异步欢迎邮件"""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +10,7 @@ from app.database import get_session
 from app.main import app
 from app import models  # 确保建表前模型已注册到 SQLModel.metadata
 from app.models import Todo, utcnow
+from app.tasks import celery_app
 
 test_engine = create_engine(
     "sqlite://",
@@ -34,6 +35,24 @@ def reset_db():
     SQLModel.metadata.drop_all(test_engine)
 
 
+@pytest.fixture(autouse=True)
+def eager_celery(monkeypatch):
+    """让 Celery 测试不依赖 Redis 和 worker：
+    1) eager 模式：.delay() 同步内联执行任务体
+    2) 把真实 SMTP 发信换成记录器，避免测试真的去连 SMTP 服务器
+    """
+    celery_app.conf.task_always_eager = True
+
+    recorded = {"emails": []}
+
+    def fake_send_email(to_email, subject, body):
+        recorded["emails"].append({"to_email": to_email, "subject": subject, "body": body})
+
+    monkeypatch.setattr("app.tasks.send_email", fake_send_email)
+    monkeypatch.setattr("app.email.send_email", fake_send_email)
+    return recorded
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
@@ -42,7 +61,9 @@ def client():
 @pytest.fixture
 def auth_headers(client):
     """注册并登录一个用户，返回带 Bearer token 的请求头"""
-    client.post("/register", json={"username": "alice", "password": "secret123"})
+    client.post(
+        "/register", json={"username": "alice", "email": "alice@example.com", "password": "secret123"}
+    )
     resp = client.post("/login", data={"username": "alice", "password": "secret123"})
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -50,11 +71,14 @@ def auth_headers(client):
 
 # ---------- 注册 / 登录 ----------
 
-def test_register(client):
-    resp = client.post("/register", json={"username": "bob", "password": "secret123"})
+def test_register(client, eager_celery):
+    resp = client.post(
+        "/register", json={"username": "bob", "email": "bob@example.com", "password": "secret123"}
+    )
     assert resp.status_code == 201
     body = resp.json()
     assert body["username"] == "bob"
+    assert body["email"] == "bob@example.com"
     assert "id" in body
     assert "hashed_password" not in body  # 密码哈希绝不能返回给客户端
 
@@ -63,16 +87,34 @@ def test_register(client):
     age = datetime.now(timezone.utc).replace(tzinfo=None) - created_at
     assert 0 <= age.total_seconds() < 5
 
+    # 注册成功应触发异步欢迎邮件（eager 模式下已被内联执行）
+    assert len(eager_celery["emails"]) == 1
+    assert eager_celery["emails"][0]["to_email"] == "bob@example.com"
+    assert "欢迎" in eager_celery["emails"][0]["subject"]
+
+
+def test_register_invalid_email(client):
+    resp = client.post(
+        "/register", json={"username": "bob", "email": "这不是邮箱", "password": "secret123"}
+    )
+    assert resp.status_code == 422  # EmailStr 自动校验，非法邮箱被拒
+
 
 def test_register_duplicate_username(client):
-    client.post("/register", json={"username": "bob", "password": "secret123"})
-    resp = client.post("/register", json={"username": "bob", "password": "another99"})
+    client.post("/register", json={"username": "bob", "email": "bob@example.com", "password": "secret123"})
+    resp = client.post("/register", json={"username": "bob", "email": "other@example.com", "password": "another99"})
     assert resp.status_code == 400  # 重名拦截
     assert "already registered" in resp.json()["detail"]
 
 
+def test_register_duplicate_email(client):
+    client.post("/register", json={"username": "bob", "email": "bob@example.com", "password": "secret123"})
+    resp = client.post("/register", json={"username": "lee", "email": "bob@example.com", "password": "secret123"})
+    assert resp.status_code == 400  # 邮箱唯一约束
+
+
 def test_login_success(client):
-    client.post("/register", json={"username": "bob", "password": "secret123"})
+    client.post("/register", json={"username": "bob", "email": "bob@example.com", "password": "secret123"})
     resp = client.post("/login", data={"username": "bob", "password": "secret123"})
     assert resp.status_code == 200
     body = resp.json()
@@ -81,7 +123,7 @@ def test_login_success(client):
 
 
 def test_login_wrong_password(client):
-    client.post("/register", json={"username": "bob", "password": "secret123"})
+    client.post("/register", json={"username": "bob", "email": "bob@example.com", "password": "secret123"})
     resp = client.post("/login", data={"username": "bob", "password": "wrongpass"})
     assert resp.status_code == 401
 
@@ -176,7 +218,10 @@ def test_delete_todo(client, auth_headers):
 # ---------- 行级隔离 ----------
 
 def _register_and_login(client, username, password="secret123"):
-    client.post("/register", json={"username": username, "password": password})
+    client.post(
+        "/register",
+        json={"username": username, "email": f"{username}@example.com", "password": password},
+    )
     resp = client.post("/login", data={"username": username, "password": password})
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 

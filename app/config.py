@@ -13,6 +13,17 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
 
+    # ---- SMTP 邮件参数（本地默认连 aiosmtpd 调试服务器）----
+    smtp_host: str = "127.0.0.1"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    mail_from: str = "noreply@example.com"
+
+    # ---- Celery 消息队列 ----
+    celery_broker_url: str = "redis://localhost:6379/0"     # 队列（broker）
+    celery_result_backend: str = "redis://localhost:6379/1"  # 任务结果存储（backend）
+
 
 settings = Settings()
 
@@ -20,3 +31,12 @@ settings = Settings()
 SECRET_KEY = settings.secret_key
 ALGORITHM = settings.algorithm
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
+
+SMTP_HOST = settings.smtp_host
+SMTP_PORT = settings.smtp_port
+SMTP_USERNAME = settings.smtp_username
+SMTP_PASSWORD = settings.smtp_password
+MAIL_FROM = settings.mail_from
+
+CELERY_BROKER_URL = settings.celery_broker_url
+CELERY_RESULT_BACKEND = settings.celery_result_backend

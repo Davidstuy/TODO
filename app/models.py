@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from pydantic import EmailStr
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -15,6 +16,7 @@ def utcnow() -> datetime:
 class UserCreate(SQLModel):
     """注册请求体"""
     username: str = Field(min_length=3, max_length=50)
+    email: EmailStr  # 入口严格校验邮箱格式，不合法直接 422
     password: str = Field(min_length=6, max_length=128)
 
 
@@ -22,15 +24,17 @@ class UserRead(SQLModel):
     """用户响应体：绝不包含 hashed_password"""
     id: int
     username: str
+    email: str
     created_at: datetime
 
 
 class User(SQLModel, table=True):
     """用户表（users）"""
-    __tablename__ = "users"  # 避免 PostgreSQL 中 user 是保留字
+    __tablename__ = "users"
 
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(unique=True, index=True)
+    email: str = Field(unique=True, index=True)
     hashed_password: str
     created_at: datetime = Field(default_factory=utcnow)
 
