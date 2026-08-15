@@ -1,0 +1,49 @@
+# Docker Compose：一条命令把全部服务启动起来（service 之间用名字互相访问）
+services:
+  # 1. Redis —— Celery 的消息队列（broker）和结果存储（backend）
+  #    redis 是现成官方镜像，不需要自己写 Dockerfile
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"          # 左边宿主机的6379 → 右边容器内6379，宿主机和容器都能访问
+
+  # 2. 调试用邮件服务器（aiosmtpd）—— 收到的邮件打印到它的控制台日志里
+  #    复用了咱们自己构建的镜像，只是把启动命令换成 aiosmtpd
+  smtp:
+    build: .
+    command: python -m aiosmtpd -n -l 0.0.0.0:1025
+    ports:
+      - "1025:1025"
+
+  # 3. web —— FastAPI 应用本体（uvicorn 启动）
+  web:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      # 容器里没法用 localhost（localhost 指容器自己），要用服务名 redis / smtp
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      SMTP_HOST: smtp
+      SMTP_PORT: 1025
+    volumes:
+      - .:/app               # 把整个项目挂进容器：改代码实时生效，不用重新构建
+    depends_on:
+      - redis
+      - smtp
+
+  # 4. worker —— Celery 后台任务进程（真正执行"发邮件"的那个）
+  worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      SMTP_HOST: smtp
+      SMTP_PORT: 1025
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - smtp

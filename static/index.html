@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="拾遗 · 简洁雅致的待办事项应用，基于 FastAPI + JWT 鉴权">
+  <title>拾遗 · 待办</title>
+
+  <!--
+    设计语言：「纸墨雅致」
+    暖纸底色 + 深墨文字 + 朱砂点缀，安静、克制、留白充足。
+    标题用衬线宋体（雅致书卷气），正文用现代无衬线（清晰易读）。
+    字体全部走本地系统字体栈，不依赖任何外链 —— 避免外网字体
+    加载超时阻塞首屏渲染（离线 / 国内环境也能秒开）。
+  -->
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23a6422c'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='serif' font-size='17' fill='%23f6f1e7'%3E%E6%8B%BE%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+  <!-- 全局纸纹噪点层（营造纸张质感，纯装饰，aria-hidden 屏蔽读屏） -->
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- ===================== 视图一：登录 / 注册 ===================== -->
+  <section id="view-auth" class="view auth-view" hidden>
+    <div class="auth-card">
+      <!-- 品牌区 -->
+      <header class="auth-brand">
+        <span class="brand-seal" aria-hidden="true">拾</span>
+        <h1 class="brand-name">拾遗</h1>
+        <p class="brand-sub">把零落的念头，收进纸里</p>
+      </header>
+
+      <!-- 登录 / 注册 切换标签 -->
+      <nav class="auth-tabs" role="tablist">
+        <button class="auth-tab is-active" data-tab="login" role="tab" aria-selected="true">登 录</button>
+        <button class="auth-tab" data-tab="register" role="tab" aria-selected="false">注 册</button>
+      </nav>
+
+      <!-- 登录表单 -->
+      <form id="login-form" class="auth-form" novalidate>
+        <label class="field">
+          <span class="field-label">用户名</span>
+          <input type="text" name="username" autocomplete="username" placeholder="你的名字" required>
+        </label>
+        <label class="field">
+          <span class="field-label">密码</span>
+          <input type="password" name="password" autocomplete="current-password" placeholder="••••••••" required>
+        </label>
+        <button type="submit" class="btn btn-primary is-block">进入拾遗</button>
+        <p class="form-hint">首次使用？点上方「注册」创建账号</p>
+      </form>
+
+      <!-- 注册表单 -->
+      <form id="register-form" class="auth-form" hidden novalidate>
+        <label class="field">
+          <span class="field-label">用户名</span>
+          <input type="text" name="username" autocomplete="username" minlength="3" maxlength="50"
+                 placeholder="3 ~ 50 个字符" required>
+        </label>
+        <label class="field">
+          <span class="field-label">邮箱</span>
+          <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required>
+        </label>
+        <label class="field">
+          <span class="field-label">密码</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="6" maxlength="128"
+                 placeholder="至少 6 位" required>
+        </label>
+        <button type="submit" class="btn btn-primary is-block">创建账号</button>
+        <p class="form-hint">已有账号？点上方「登录」</p>
+      </form>
+    </div>
+
+    <!-- 底部小字：教学性信息 -->
+    <footer class="auth-foot">拾遗 · 基于 FastAPI + JWT + SQLModel 的示例应用</footer>
+  </section>
+
+  <!-- ===================== 视图二：主应用 ===================== -->
+  <section id="view-app" class="view app-view" hidden>
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="topbar-brand" href="#">
+          <span class="brand-seal brand-seal--sm" aria-hidden="true">拾</span>
+          <span class="topbar-brand-name">拾遗</span>
+        </a>
+        <div class="userchip" id="user-chip">
+          <span class="userchip-avatar" id="user-avatar" aria-hidden="true"></span>
+          <span class="userchip-name" id="user-name">—</span>
+          <button class="userchip-logout" id="btn-logout" type="button" title="退出登录">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- 问候区：日期 + 当日进度 -->
+      <section class="hero">
+        <p class="hero-eyebrow" id="today-label">今日</p>
+        <h2 class="hero-title" id="greeting">你好。</h2>
+        <p class="hero-progress" id="progress-line">今天还没有安排，写下第一件小事吧。</p>
+      </section>
+
+      <!-- 新增待办 -->
+      <form id="composer" class="composer" autocomplete="off">
+        <input id="composer-input" class="composer-input" type="text"
+               placeholder="写下一件要完成的事…" maxlength="200" required>
+        <button id="composer-submit" class="composer-submit" type="submit" aria-label="添加待办">＋</button>
+      </form>
+
+      <!-- 过滤工具条 -->
+      <nav class="toolbar" role="tablist">
+        <button class="filter-tab is-active" data-filter="all" role="tab" aria-selected="true">全部 <em data-count="all">0</em></button>
+        <button class="filter-tab" data-filter="active" role="tab" aria-selected="false">未完成 <em data-count="active">0</em></button>
+        <button class="filter-tab" data-filter="done" role="tab" aria-selected="false">已完成 <em data-count="done">0</em></button>
+      </nav>
+
+      <!-- 待办列表 -->
+      <ul id="todo-list" class="todo-list" aria-label="待办列表"></ul>
+
+      <!-- 空状态 -->
+      <div id="empty-state" class="empty" hidden>
+        <div class="empty-mark" aria-hidden="true"></div>
+        <p class="empty-title" id="empty-title">此刻，空空如也</p>
+        <p class="empty-sub" id="empty-sub">上面写下一件小事，从这里开始。</p>
+      </div>
+    </main>
+
+    <footer class="app-foot">数据仅本人可见 · 令牌 30 分钟有效</footer>
+  </section>
+
+  <!-- ===================== 编辑弹窗 ===================== -->
+  <div id="edit-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <form id="edit-form" class="modal-card" novalidate>
+      <h3 class="modal-title">润色这件事</h3>
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input type="text" name="title" maxlength="200" required>
+      </label>
+      <label class="field">
+        <span class="field-label">备注</span>
+        <textarea name="description" rows="4" placeholder="可留空，补充一点细节…"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== 轻提示 ===================== -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- 脚本按职责拆分，注释里标注了每个文件的作用，便于学习 -->
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/ui.js"></script>
+  <script src="/static/js/state.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/todos.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
